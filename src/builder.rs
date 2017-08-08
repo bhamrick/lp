@@ -205,8 +205,8 @@ impl Problem {
         c_data.resize(var_count, 0.0);
         for (&var, &coeff) in &self.objective.coefficients {
             let sign = match self.objective.direction {
-                ObjectiveDirection::Maximize => 1.0,
-                ObjectiveDirection::Minimize => -1.0,
+                ObjectiveDirection::Maximize => -1.0,
+                ObjectiveDirection::Minimize => 1.0,
             };
             match var_mapping[var] {
                 VariableMapping::Direct(std_var) => {
@@ -305,7 +305,7 @@ fn standard_form() {
     assert_eq!(standard_form.b.data(),
                &vec![5.0, 10.0, 2.0]);
     assert_eq!(standard_form.c.data(),
-               &vec![1.0, 1.0, -1.0, 0.0, 0.0, 0.0]);
+               &vec![-1.0, -1.0, 1.0, 0.0, 0.0, 0.0]);
     assert_eq!(mapping[0], VariableMapping::Direct(0));
     assert_eq!(mapping[1], VariableMapping::Difference(1, 2));
 }

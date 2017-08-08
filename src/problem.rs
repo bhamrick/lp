@@ -4,7 +4,7 @@ use rulinalg::vector::Vector;
 #[derive(Debug, Clone)]
 pub struct StandardForm {
     // Standard form linear program:
-    // Maximize c^Tx
+    // Minimize c^Tx
     // subject to Ax = b
     // and x >= 0
     pub a: Matrix<f32>,

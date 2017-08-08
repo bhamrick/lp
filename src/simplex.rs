@@ -66,7 +66,7 @@ impl SimplexState {
 
         let mut entering_index = None;
         for (i, &idx) in nonbasis_indices.iter().enumerate() {
-            if s_n[i] > 0.0 {
+            if s_n[i] < 0.0 {
                 entering_index = Some(idx);
                 break;
             }
@@ -189,7 +189,7 @@ fn phase1_start(problem: &StandardForm) -> SimplexState {
         phase1_c_data.push(0.0);
     }
     for _ in 0..num_zs {
-        phase1_c_data.push(-1.0);
+        phase1_c_data.push(1.0);
     }
 
     let phase1_problem = StandardForm {
@@ -233,7 +233,7 @@ fn test_simplex() {
             2.0, 5.0, 3.0, 0.0, 1.0,
         ]),
         b: Vector::new(vec![10.0, 15.0]),
-        c: Vector::new(vec![2.0, 3.0, 4.0, 0.0, 0.0]),
+        c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
     };
     let state =
         SimplexState::from_basis(problem,&vec![3, 4])
@@ -262,7 +262,7 @@ fn test_feasible_phase1() {
             2.0, 5.0, 3.0, 0.0, 1.0,
         ]),
         b: Vector::new(vec![10.0, 15.0]),
-        c: Vector::new(vec![2.0, 3.0, 4.0, 0.0, 0.0]),
+        c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
     };
     let phase1_start = phase1_start(&problem);
     let phase1_optimized = phase1_start.optimized_state()
@@ -281,7 +281,7 @@ fn test_solve() {
             2.0, 5.0, 3.0, 0.0, 1.0,
         ]),
         b: Vector::new(vec![10.0, 15.0]),
-        c: Vector::new(vec![2.0, 3.0, 4.0, 0.0, 0.0]),
+        c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
     };
     let result = solve(problem);
     let expected_result = [0.0, 0.0, 5.0, 5.0, 0.0];
@@ -305,7 +305,7 @@ fn test_solve_infeasible() {
             1.0, 0.0, 1.0,
         ]),
         b: Vector::new(vec![5.0, 10.0, 12.0]),
-        c: Vector::new(vec![1.0, 1.0, 1.0]),
+        c: Vector::new(vec![-1.0, -1.0, -1.0]),
     };
     let result = solve(problem);
     assert_eq!(result, LPResult::Infeasible);
@@ -318,7 +318,7 @@ fn test_solve_unbounded() {
             1.0, -2.0,
         ]),
         b: Vector::new(vec![5.0]),
-        c: Vector::new(vec![1.0, 1.0]),
+        c: Vector::new(vec![-1.0, -1.0]),
     };
     let result = solve(problem);
     assert_eq!(result, LPResult::Unbounded);

@@ -1,27 +1,18 @@
 use std::collections::HashSet;
 use std::vec::Vec;
 
-use rulinalg;
 use rulinalg::matrix::BaseMatrix;
 use rulinalg::vector::Vector;
 use rulinalg::matrix::Matrix;
 
 use problem::*;
+use error::Error;
 
 #[derive(Debug, Clone)]
 struct SimplexState {
     basis: Vec<usize>,
     x_b: Vector<f32>,
     problem: StandardForm,
-}
-
-#[derive(Debug, Clone)]
-struct Error {}
-
-impl From<rulinalg::error::Error> for Error {
-    fn from(_: rulinalg::error::Error) -> Error {
-        Error {}
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -155,6 +155,14 @@ impl InteriorState {
         let lambda = mat_b.transpose().solve(c_b)?;
         let x_b = mat_b.solve(self.problem.b.clone())?;
 
+        // If any coordinates in x_b are negative, then this is not a feasible
+        // basis, and therefore not optimal.
+        for &v in x_b.iter() {
+            if v < 0.0 {
+                return Ok(None);
+            }
+        }
+
         let mat_n = self.problem.a.select_cols(nonbasis_indices.iter());
         let s_n = c_n - mat_n.transpose() * lambda;
 
@@ -302,14 +310,11 @@ pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
             // Check if NaNs have gotten into our state. If so, we should
             // do feasibility checks or error out.
             let mut has_nan = false;
-            for v in state.x.iter() {
-                has_nan |= v.is_nan();
-            }
-            for v in state.y.iter() {
-                has_nan |= v.is_nan();
-            }
-            for v in state.z.iter() {
-                has_nan |= v.is_nan();
+            for v in state.x.iter().chain(state.y.iter()).chain(state.z.iter()) {
+                if v.is_nan() {
+                    has_nan = true;
+                    break;
+                }
             }
 
             if has_nan {

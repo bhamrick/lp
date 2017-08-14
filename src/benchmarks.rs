@@ -10,7 +10,8 @@ use test::Bencher;
 fn simplex_dense_20x40(b: &mut Bencher) {
     b.iter(|| {
         let problem = dense_seeded(20, 40, [13, 37, 58, 23]);
-        simplex::solve(problem);
+        simplex::solve(problem)
+            .expect("Simplex solve should not fail");
     });
 }
 
@@ -18,6 +19,7 @@ fn simplex_dense_20x40(b: &mut Bencher) {
 fn interior_dense_20x40(b: &mut Bencher) {
     b.iter(|| {
         let problem = dense_seeded(20, 40, [13, 37, 58, 23]);
-        interior::solve(problem);
+        interior::solve(problem)
+            .expect("Interior solve should not fail");
     });
 }

@@ -1,10 +1,13 @@
 use rulinalg;
 
-#[derive(Debug, Clone)]
-pub struct Error {}
+#[derive(Debug)]
+pub enum Error {
+    RulinalgError(rulinalg::error::Error),
+    UnknownError,
+}
 
 impl From<rulinalg::error::Error> for Error {
-    fn from(_: rulinalg::error::Error) -> Error {
-        Error {}
+    fn from(e: rulinalg::error::Error) -> Error {
+        Error::RulinalgError(e)
     }
 }

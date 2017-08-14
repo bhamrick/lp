@@ -4,9 +4,7 @@
 use std::collections::HashSet;
 
 use rulinalg::vector::Vector;
-use rulinalg::matrix::{BaseMatrix, BaseMatrixMut};
-#[cfg(test)]
-use rulinalg::matrix::Matrix;
+use rulinalg::matrix::{BaseMatrix, BaseMatrixMut, Matrix};
 
 use problem::{StandardForm, LPResult};
 use error::Error;
@@ -35,16 +33,16 @@ impl InteriorState {
         }
 
         // Compute AZ^-1XA^T
-        let m = azx.clone() * self.problem.a.transpose();
+        let m = &azx * self.problem.a.transpose();
 
         // Compute RHS: AZ^-1X(c - muX^-1e - A^Ty) + b - Ax
         // Compute v1 = c - A^Ty - muX^-1e
-        let mut v1 = self.problem.c.clone() - self.problem.a.transpose()*self.y.clone();
+        let mut v1 = &self.problem.c - self.problem.a.transpose() * &self.y;
         for (i, entry) in v1.iter_mut().enumerate() {
             *entry -= self.mu / self.x[i];
         }
 
-        let rhs = azx * v1 + self.problem.b.clone() - self.problem.a.clone()*self.x.clone();
+        let rhs = azx * v1 + &self.problem.b - &self.problem.a * &self.x;
 
         // Compute newton step for y
         let p_y = m.solve(rhs)?;
@@ -53,9 +51,9 @@ impl InteriorState {
         // A^Tp_y + p_z = c - A^Ty - z
         // => p_z = c - A^Ty - z - A^Tp_y
         // = c - A^T(y+p_y) - z
-        let p_z = self.problem.c.clone()
-            - self.problem.a.transpose()*(self.y.clone() + p_y.clone())
-            - self.z.clone();
+        let p_z = &self.problem.c
+            - self.problem.a.transpose()*(&self.y + &p_y)
+            - &self.z;
 
         // Compute newton step for x
         // Zp_x + Xp_z = mu*e - XZe
@@ -126,7 +124,7 @@ impl InteriorState {
     // Round the current interior point to a vertex and check if that
     // vertex is the optimum of the linear program. Returns the vertex
     // if so, None otherwise.
-    fn check_rounded(&self) -> Result<Option<Vector<f32>>, Error> {
+    fn check_rounded(&self) -> Result<Option<LPResult>, Error> {
         let mut dimensions = Vec::new();
         for (i, _) in self.x.iter().enumerate() {
             dimensions.push(i)
@@ -160,30 +158,106 @@ impl InteriorState {
         let mat_n = self.problem.a.select_cols(nonbasis_indices.iter());
         let s_n = c_n - mat_n.transpose() * lambda;
 
-        let mut is_optimum = true;
-        for &delta in s_n.iter() {
-            if delta < 0.0 {
-                is_optimum = false;
+        let mut entering_index = None;
+        for (i, &idx) in nonbasis_indices.iter().enumerate() {
+            if s_n[i] < 0.0 {
+                entering_index = Some(idx);
                 break;
             }
         }
 
-        if is_optimum {
+        if let Some(q) = entering_index {
+            // An entering index (a la simplex) exists, so we are not
+            // at an optimal vertex. We will check if this entering index
+            // gives us an unbounded solution.
+
+            // I believe (though this may be unfounded) that in the case of an
+            // unbounded LP, when we get a large point, every increasing direction
+            // from the rounded vertex will be unbounded.
+            let a_q = self.problem.a.col(q).into();
+            let mat_b = self.problem.a.select_cols(basis.iter());
+            let d = mat_b.solve(a_q)?;
+            let mut is_unbounded = true;
+            for &delta in d.iter() {
+                if delta > 0.0 {
+                    is_unbounded = false;
+                    break;
+                }
+            }
+
+            if is_unbounded {
+                Ok(Some(LPResult::Unbounded))
+            } else {
+                Ok(None)
+            }
+        } else {
+            // No entering index exists, so this vertex is optimal. Convert
+            // the compressed vector form to the full vector and return.
             let mut opt_data = Vec::new();
             opt_data.resize(self.problem.a.cols(), 0.0);
             for (i, &idx) in basis.iter().enumerate() {
                 opt_data[idx] = x_b[i];
             }
-            Ok(Some(Vector::new(opt_data)))
-        } else {
-            Ok(None)
+            Ok(Some(LPResult::Optimum(Vector::new(opt_data))))
         }
     }
 }
 
-pub fn solve(problem: StandardForm) -> LPResult {
-    // TODO: Check feasibility
-    // TODO: Handle unbounded problems
+// Generate a feasible LP whose solution informs us as to whether the
+// original LP is feasible.
+// It takes the form:
+// Minimize 1^T z
+// Subject to Ax + z = b, x >= 0, z >= 0
+// For our purposes, we will avoid adding z variables when b_i = 0.
+// This LP is feasible as we can pick x = 0, z = b.
+// The original LP is feasible iff the minimum objective value is 0.
+//
+// Currently this code is the same as the code in simplex.rs, but
+// the two functions are separate as the two methods may in the future
+// want slightly different formulations of the phase 1 problem in order
+// to create simpler starting points.
+fn phase1(problem: &StandardForm) -> StandardForm {
+    let num_cols = problem.a.cols();
+    let mut num_zs = 0;
+
+    for (i, _) in problem.a.row_iter().enumerate() {
+        if problem.b[i] != 0.0 {
+            num_zs += 1;
+        }
+    }
+
+    let mut z_count = 0;
+    let mut phase1_a_data = Vec::new();
+    for (i, row) in problem.a.row_iter().enumerate() {
+        phase1_a_data.extend_from_slice(row.raw_slice());
+        let mut z_coeffs = Vec::new();
+        z_coeffs.resize(num_zs, 0.0);
+        if problem.b[i] > 0.0 {
+            z_coeffs[z_count] = 1.0;
+            z_count += 1;
+        } else if problem.b[i] < 0.0 {
+            z_coeffs[z_count] = -1.0;
+            z_count += 1;
+        }
+        phase1_a_data.extend(z_coeffs);
+    }
+
+    let mut phase1_c_data = Vec::new();
+    for _ in 0..num_cols {
+        phase1_c_data.push(0.0);
+    }
+    for _ in 0..num_zs {
+        phase1_c_data.push(1.0);
+    }
+
+    StandardForm {
+        a: Matrix::new(problem.a.rows(), num_cols + num_zs, phase1_a_data),
+        b: problem.b.clone(),
+        c: Vector::new(phase1_c_data),
+    }
+}
+
+pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
     // TODO: Improve selection of initial mu and how it decreases.
     let mut initial_mu = 1.0;
     for c_i in problem.c.iter() {
@@ -204,20 +278,83 @@ pub fn solve(problem: StandardForm) -> LPResult {
     loop {
         // Run Newton's method to almost convergence
         loop {
-            let step_size = state.newton_step().expect("newton_step should not error");
+            let saved_state = state.clone();
+            let step_size = match state.newton_step() {
+                Ok(s) => s,
+                Err(_) => {
+                    // Likely our problem or its dual is infeasible.
+                    if is_feasible(&state.problem)? {
+                        if is_feasible(&state.problem.dual())? {
+                            // TODO: Make this error informative.
+                            // Here both the primal and dual are feasible but
+                            // we were unable to solve the problem.
+                            return Err(Error::UnknownError);
+                        } else {
+                            // If the primal is feasible and the dual is not,
+                            // the primal must be unbounded.
+                            return Ok(LPResult::Unbounded);
+                        }
+                    } else {
+                        return Ok(LPResult::Infeasible);
+                    }
+                },
+            };
+            // Check if NaNs have gotten into our state. If so, we should
+            // do feasibility checks or error out.
+            let mut has_nan = false;
+            for v in state.x.iter() {
+                has_nan |= v.is_nan();
+            }
+            for v in state.y.iter() {
+                has_nan |= v.is_nan();
+            }
+            for v in state.z.iter() {
+                has_nan |= v.is_nan();
+            }
+
+            if has_nan {
+                // Newton's method is diverging, check if it is showing us an
+                // unbounded direction, and stop in any case.
+                match saved_state.check_rounded()? {
+                    Some(res) => return Ok(res),
+                    // TODO: Make error message informative.
+                    None => return Err(Error::UnknownError),
+                }
+            }
+
             if step_size < 1e-2 {
                 break;
             }
         }
         // Check for optimality
         match state.check_rounded().expect("check_rounded should not error") {
-            Some(x) => {
-                return LPResult::Optimum(x);
+            Some(res) => {
+                return Ok(res);
             },
             None => {},
         }
         // Decrease mu and repeat
         state.mu *= 0.5;
+    }
+}
+
+pub fn is_feasible(problem: &StandardForm) -> Result<bool, Error> {
+    let phase1_solution = solve(phase1(problem))?;
+    match phase1_solution {
+        LPResult::Infeasible => {
+            panic!("Phase 1 returned infeasible. This is a bug.");
+        },
+        LPResult::Unbounded => {
+            panic!("Phase 1 returned unbounded. This is a bug.");
+        },
+        LPResult::Optimum(x) => {
+            for i in problem.a.cols() .. x.size() {
+                if x[i] > 0.0 {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        },
     }
 }
 
@@ -249,13 +386,13 @@ fn test_newton() {
 
     // Verify that the desired equations approximately hold:
     // Ax = b
-    let ax = state.problem.a.clone() * state.x.clone();
+    let ax = &state.problem.a * &state.x;
     for (i, entry) in ax.iter().enumerate() {
         assert!((entry - state.problem.b[i]).abs() < 1e-4);
     }
 
     // A^Ty + z = c
-    let aty = state.problem.a.transpose() * state.y.clone();
+    let aty = state.problem.a.transpose() * &state.y;
     for (i, entry) in state.problem.c.iter().enumerate() {
         assert!((entry - (aty[i] + state.z[i])).abs() < 1e-4);
     }
@@ -325,11 +462,17 @@ fn test_rounding() {
     let rounded_result = state.check_rounded();
 
     match rounded_result {
-        Ok(Some(x)) => {
+        Ok(Some(LPResult::Optimum(x))) => {
             let expected_result = [0.0, 0.0, 5.0, 5.0, 0.0];
             for (i, v) in x.iter().enumerate() {
                 assert!((v - expected_result[i]).abs() < 1e-4);
             }
+        },
+        Ok(Some(LPResult::Infeasible)) => {
+            panic!("Expected optimum vertex, got infeasible");
+        },
+        Ok(Some(LPResult::Unbounded)) => {
+            panic!("Expected optimum vertex, got unbounded");
         },
         Ok(None) => {
             panic!("Expected optimum vertex, got nothing");
@@ -350,7 +493,8 @@ fn test_solve_simple() {
         b: Vector::new(vec![10.0, 15.0]),
         c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
     };
-    let result = solve(problem);
+    let result = solve(problem)
+        .expect("Solve should not fail");
 
     match result {
         LPResult::Infeasible => panic!("Expected optimum, got infeasible"),
@@ -362,4 +506,70 @@ fn test_solve_simple() {
             }
         },
     }
+}
+
+#[test]
+fn test_solve_unbounded() {
+    let problem = StandardForm {
+        a: Matrix::new(1, 2,vec![
+            1.0, -2.0,
+        ]),
+        b: Vector::new(vec![10.0]),
+        c: Vector::new(vec![-1.0, 1.9]),
+    };
+    let result = solve(problem)
+        .expect("Solve should not fail");
+
+    match result {
+        LPResult::Infeasible => panic!("Expected unbounded, got infeasible"),
+        LPResult::Unbounded => {},
+        LPResult::Optimum(_) => panic!("Expected unbounded, got optimum"),
+    }
+}
+
+#[test]
+fn test_solve_infeasible() {
+    let problem = StandardForm {
+        a: Matrix::new(3, 4, vec![
+            1.0, 0.0, -1.0, 0.0,
+            0.0, 1.0, 0.0, -1.0,
+            1.0, 1.0, 0.0, 0.0,
+        ]),
+        b: Vector::new(vec![6.0, 7.0, 11.0]),
+        c: Vector::new(vec![-1.0, -1.0, -1.0, -1.0]),
+    };
+    let result = solve(problem)
+        .expect("Solve should not fail");
+
+    match result {
+        LPResult::Infeasible => {},
+        LPResult::Unbounded => panic!("Expected infeasible, got unbounded"),
+        LPResult::Optimum(_) => panic!("Expected infeasible, got optimum"),
+    }
+}
+
+#[test]
+fn test_feasibility_check() {
+    let feasible_problem = StandardForm {
+        a: Matrix::new(2, 5, vec![
+            3.0, 2.0, 1.0, 1.0, 0.0,
+            2.0, 5.0, 3.0, 0.0, 1.0,
+        ]),
+        b: Vector::new(vec![10.0, 15.0]),
+        c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
+    };
+    assert!(is_feasible(&feasible_problem)
+        .expect("Feasibility test should not fail"));
+
+    let infeasible_problem = StandardForm {
+        a: Matrix::new(3, 4, vec![
+            1.0, 0.0, -1.0, 0.0,
+            0.0, 1.0, 0.0, -1.0,
+            1.0, 1.0, 0.0, 0.0,
+        ]),
+        b: Vector::new(vec![6.0, 7.0, 11.0]),
+        c: Vector::new(vec![-1.0, -1.0, -1.0, -1.0]),
+    };
+    assert!(!is_feasible(&infeasible_problem)
+        .expect("Feasibility test should not fail"));
 }

@@ -39,8 +39,10 @@ fn same_result(result1: LPResult, result2: LPResult) -> bool {
 fn dense_20x40() {
     // Test that simplex and interior methods give the same result
     let problem = dense_seeded(20, 40, [13, 37, 58, 23]);
-    let simplex_solution = simplex::solve(problem.clone());
-    let interior_solution = interior::solve(problem.clone());
+    let simplex_solution = simplex::solve(problem.clone())
+        .expect("Simplex test failed;");
+    let interior_solution = interior::solve(problem.clone())
+        .expect("Interior test failed");
 
     if let LPResult::Infeasible = simplex_solution {
         panic!("Simplex got Infeasible on problem generated to be feasible");

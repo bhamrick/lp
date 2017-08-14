@@ -201,19 +201,17 @@ fn phase1_start(problem: &StandardForm) -> SimplexState {
     phase1_start_state
 }
 
-pub fn solve(problem: StandardForm) -> LPResult {
+pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
     let phase1_start = phase1_start(&problem);
-    let phase1_optimized = phase1_start.optimized_state()
-        .expect("Optimizing phase 1 should not fail");
+    let phase1_optimized = phase1_start.optimized_state()?;
     for &i in phase1_optimized.basis.iter() {
         if i >= problem.a.cols() {
-            return LPResult::Infeasible;
+            return Ok(LPResult::Infeasible);
         }
     }
     let phase2_start =
-        SimplexState::from_basis(problem, &phase1_optimized.basis)
-            .expect("Resulting basis from phase 1 should be valid");
-    phase2_start.optimize().expect("Optimizing phase 2 should not fail")
+        SimplexState::from_basis(problem, &phase1_optimized.basis)?;
+    phase2_start.optimize()
 }
 
 #[test]
@@ -274,7 +272,8 @@ fn test_solve() {
         b: Vector::new(vec![10.0, 15.0]),
         c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
     };
-    let result = solve(problem);
+    let result = solve(problem)
+        .expect("Solve should not fail");
     let expected_result = [0.0, 0.0, 5.0, 5.0, 0.0];
     match result {
         LPResult::Unbounded => panic!("Expected optimum, got unbounded"),
@@ -298,7 +297,8 @@ fn test_solve_infeasible() {
         b: Vector::new(vec![5.0, 10.0, 12.0]),
         c: Vector::new(vec![-1.0, -1.0, -1.0]),
     };
-    let result = solve(problem);
+    let result = solve(problem)
+        .expect("Solve should not fail");
     assert_eq!(result, LPResult::Infeasible);
 }
 
@@ -311,6 +311,7 @@ fn test_solve_unbounded() {
         b: Vector::new(vec![5.0]),
         c: Vector::new(vec![-1.0, -1.0]),
     };
-    let result = solve(problem);
+    let result = solve(problem)
+        .expect("Solve should not fail");
     assert_eq!(result, LPResult::Unbounded);
 }

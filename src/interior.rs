@@ -40,7 +40,7 @@ impl InteriorState {
         // Compute RHS: AZ^-1X(c - muX^-1e - A^Ty) + b - Ax
         // Compute v1 = c - A^Ty - muX^-1e
         let mut v1 = self.problem.c.clone() - self.problem.a.transpose()*self.y.clone();
-        for (i, mut entry) in v1.iter_mut().enumerate() {
+        for (i, entry) in v1.iter_mut().enumerate() {
             *entry -= self.mu / self.x[i];
         }
 
@@ -181,8 +181,9 @@ impl InteriorState {
     }
 }
 
-pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
+pub fn solve(problem: StandardForm) -> LPResult {
     // TODO: Check feasibility
+    // TODO: Handle unbounded problems
     // TODO: Improve selection of initial mu and how it decreases.
     let mut initial_mu = 1.0;
     for c_i in problem.c.iter() {
@@ -203,15 +204,15 @@ pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
     loop {
         // Run Newton's method to almost convergence
         loop {
-            let step_size = state.newton_step()?;
+            let step_size = state.newton_step().expect("newton_step should not error");
             if step_size < 1e-2 {
                 break;
             }
         }
         // Check for optimality
-        match state.check_rounded()? {
+        match state.check_rounded().expect("check_rounded should not error") {
             Some(x) => {
-                return Ok(LPResult::Optimum(x));
+                return LPResult::Optimum(x);
             },
             None => {},
         }
@@ -352,18 +353,13 @@ fn test_solve_simple() {
     let result = solve(problem);
 
     match result {
-        Ok(res) => {
-            match res {
-                LPResult::Infeasible => panic!("Expected optimum, got infeasible"),
-                LPResult::Unbounded => panic!("Expected optimum, got unbounded"),
-                LPResult::Optimum(x) => {
-                    let expected_result = [0.0, 0.0, 5.0, 5.0, 0.0];
-                    for (i, v) in x.iter().enumerate() {
-                        assert!((v - expected_result[i]).abs() < 1e-4);
-                    }
-                }
+        LPResult::Infeasible => panic!("Expected optimum, got infeasible"),
+        LPResult::Unbounded => panic!("Expected optimum, got unbounded"),
+        LPResult::Optimum(x) => {
+            let expected_result = [0.0, 0.0, 5.0, 5.0, 0.0];
+            for (i, v) in x.iter().enumerate() {
+                assert!((v - expected_result[i]).abs() < 1e-4);
             }
         },
-        Err(e) => panic!("Expected optimum, got error: {:?}", e),
     }
 }

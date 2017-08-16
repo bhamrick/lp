@@ -4,7 +4,9 @@
 use std::collections::HashSet;
 
 use rulinalg::vector::Vector;
-use rulinalg::matrix::{BaseMatrix, BaseMatrixMut, Matrix};
+use rulinalg::matrix::{BaseMatrix, BaseMatrixMut};
+#[cfg(test)]
+use rulinalg::matrix::Matrix;
 
 use problem::{StandardForm, LPResult};
 use error::Error;
@@ -215,13 +217,11 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
         problem: problem,
     };
 
+    let mut known_dual_infeasible = false;
+
     loop {
         // Run Newton's method to almost convergence
         let (step_size, alpha) = state.newton_step()?;
-        println!("{:?} {:?} {:?}", step_size, alpha, state);
-        println!("{:?}", state.problem.c.dot(&state.x));
-        println!("{:?}", state.problem.a.transpose() * &state.y);
-        println!("{:?}", state.problem.b.dot(&state.y));
 
         if alpha == 1.0 {
             // If we ever take a full newton step, we have
@@ -229,6 +229,7 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
             known_feasible = true;
             known_bounded = true;
         }
+
         if !known_feasible {
             // Check if y is a certificate of infeasibility.
             // If A^Ty <= 0, but b^T y > 0, then the original problem
@@ -251,6 +252,63 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
                     return Ok(LPResult::Infeasible);
                 }
             }
+
+            // Check for a feasible point near x.
+            // Due to Newton iteration Ax is approximately b,
+            // solve AA^T v = b - Ax in order to find x' with
+            // Ax' = b. If x' >= 0 then the problem is feasible.
+            // TODO: Cache LU factorization of AA^T to speed these repeated
+            // solves.
+            let adjustment = (&state.problem.a * state.problem.a.transpose())
+                .solve(&state.problem.b - &state.problem.a * &state.x)?;
+            let new_x = &state.x + state.problem.a.transpose() * adjustment;
+            let mut is_positive = true;
+            for &v in new_x.iter() {
+                if v < 0.0 {
+                    is_positive = false;
+                    break;
+                }
+            }
+            if is_positive {
+                known_feasible = true;
+            }
+        }
+
+        if !known_bounded && !known_dual_infeasible {
+            // Check if x is close to a certificate of unboundedness.
+            // If Ax = 0, x >= 0, c^Tx < 0, then the dual is infeasible.
+            // If the problem is itself feasible, it must then be unbounded.
+
+            // We take a few steps here. First, we scale x so that its
+            // largest coordinate is at most 1. Then we find a close x'
+            // such that Ax' = 0.
+            // As A is assumed to have full row rank, AA^T is invertible,
+            // so we solve the system AA^Tv = Ax, then let x' = x - A^Tv.
+            // If c^Tx' < 0, we have our desired certificate.
+            let mut max_entry = 1.0;
+            for &v in state.x.iter() {
+                if v.abs() > max_entry {
+                    max_entry = v.abs();
+                }
+            }
+            let reduced_x = &state.x / max_entry;
+            let adjustment = (&state.problem.a * &state.problem.a.transpose())
+                .solve(&state.problem.a * &reduced_x)?;
+            let new_x = &reduced_x - state.problem.a.transpose() * &adjustment;
+            let mut is_positive = true;
+            for &v in new_x.iter() {
+                if v < 0.0 {
+                    is_positive = false;
+                    break;
+                }
+            }
+            if is_positive && state.problem.c.dot(&new_x) < 0.0 {
+                known_dual_infeasible = true;
+            }
+        }
+
+        if known_feasible && known_dual_infeasible {
+            return Ok(LPResult::Unbounded);
         }
 
         if step_size < 1e-2 {
@@ -260,7 +318,6 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
         // Check for optimality
         match state.check_rounded().expect("check_rounded should not error") {
             Some(res) => {
-                println!("{:?}", res);
                 return Ok(res);
             },
             None => {},
@@ -457,31 +514,3 @@ fn test_solve_infeasible() {
         LPResult::Optimum(_) => panic!("Expected infeasible, got optimum"),
     }
 }
-
-/*
-#[test]
-fn test_feasibility_check() {
-    let feasible_problem = StandardForm {
-        a: Matrix::new(2, 5, vec![
-            3.0, 2.0, 1.0, 1.0, 0.0,
-            2.0, 5.0, 3.0, 0.0, 1.0,
-        ]),
-        b: Vector::new(vec![10.0, 15.0]),
-        c: Vector::new(vec![-2.0, -3.0, -4.0, 0.0, 0.0]),
-    };
-    assert!(is_feasible(&feasible_problem)
-        .expect("Feasibility test should not fail"));
-
-    let infeasible_problem = StandardForm {
-        a: Matrix::new(3, 4, vec![
-            1.0, 0.0, -1.0, 0.0,
-            0.0, 1.0, 0.0, -1.0,
-            1.0, 1.0, 0.0, 0.0,
-        ]),
-        b: Vector::new(vec![6.0, 7.0, 11.0]),
-        c: Vector::new(vec![-1.0, -1.0, -1.0, -1.0]),
-    };
-    assert!(!is_feasible(&infeasible_problem)
-        .expect("Feasibility test should not fail"));
-}
-*/

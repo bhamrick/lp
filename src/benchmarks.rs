@@ -60,3 +60,12 @@ fn interior_dense_40x80(b: &mut Bencher) {
             .expect("Interior solve should not fail");
     });
 }
+
+#[bench]
+fn interior_dense_100x200(b: &mut Bencher) {
+    b.iter(|| {
+        let problem = dense_seeded(100, 200, [1, 2, 3, 4]);
+        interior::solve(problem)
+            .expect("Interior solve should not fail");
+    });
+}

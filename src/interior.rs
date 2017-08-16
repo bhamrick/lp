@@ -9,6 +9,8 @@ use rulinalg::matrix::{BaseMatrix, BaseMatrixMut, Matrix};
 use problem::{StandardForm, LPResult};
 use error::Error;
 
+const NEWTON_ITERATION_LIMIT : usize = 20;
+
 #[derive(Debug, Clone)]
 struct InteriorState {
     x: Vector<f32>,
@@ -19,13 +21,16 @@ struct InteriorState {
 }
 
 impl InteriorState {
-    // Returns a measure of how big the step attempted was.
+    // Returns a measure of how big the step attempted was,
+    // and the actual step size as a ratio of that.
     // For each component, considers the smaller of the
     // absolute and relative changes, returns the largest
     // of those.
-    // The step actually taken can be smaller due to the
-    // positivity constraint.
-    fn newton_step(&mut self) -> Result<f32, Error> {
+
+    // If the second returned value is 1.0, the entire Newton
+    // step was feasible, and as a result the primal and
+    // dual are both strictly feasible.
+    fn newton_step(&mut self) -> Result<(f32, f32), Error> {
         // azx is the matrix AZ^-1X
         let mut azx = self.problem.a.clone();
         for (i, mut c) in azx.col_iter_mut().enumerate() {
@@ -81,7 +86,7 @@ impl InteriorState {
                 alpha = max_step;
             }
         }
-        let mut result = 0.0;
+        let mut step_size = 0.0;
 
         for (i, val) in p_x.iter().enumerate() {
             let change_size = if self.x[i].abs() < 1.0 {
@@ -89,8 +94,8 @@ impl InteriorState {
             } else {
                 (val/self.x[i]).abs()
             };
-            if change_size > result {
-                result = change_size;
+            if change_size > step_size {
+                step_size = change_size;
             }
         }
         for (i, val) in p_y.iter().enumerate() {
@@ -99,8 +104,8 @@ impl InteriorState {
             } else {
                 (val/self.y[i]).abs()
             };
-            if change_size > result {
-                result = change_size;
+            if change_size > step_size {
+                step_size = change_size;
             }
         }
         for (i, val) in p_z.iter().enumerate() {
@@ -109,16 +114,16 @@ impl InteriorState {
             } else {
                 (val/self.z[i]).abs()
             };
-            if change_size > result {
-                result = change_size;
+            if change_size > step_size {
+                step_size = change_size;
             }
         }
 
-        self.x += p_x * alpha;
-        self.y += p_y * alpha;
-        self.z += p_z * alpha;
+        self.x += &p_x * alpha;
+        self.y += &p_y * alpha;
+        self.z += &p_z * alpha;
 
-        Ok(result)
+        Ok((step_size, alpha))
     }
 
     // Round the current interior point to a vertex and check if that
@@ -133,8 +138,7 @@ impl InteriorState {
 
         let mut basis = Vec::new();
 
-        // Optimistically assume that all the corresponding columns of A will be
-        // independent. (TODO: Select columns to ensure independence?)
+        // Pick the largest components to be in our basis (allowed nonzero components)
         for i in 0..self.problem.a.rows() {
             basis.push(dimensions[i]);
         }
@@ -174,30 +178,8 @@ impl InteriorState {
             }
         }
 
-        if let Some(q) = entering_index {
-            // An entering index (a la simplex) exists, so we are not
-            // at an optimal vertex. We will check if this entering index
-            // gives us an unbounded solution.
-
-            // I believe (though this may be unfounded) that in the case of an
-            // unbounded LP, when we get a large point, every increasing direction
-            // from the rounded vertex will be unbounded.
-            let a_q = self.problem.a.col(q).into();
-            let mat_b = self.problem.a.select_cols(basis.iter());
-            let d = mat_b.solve(a_q)?;
-            let mut is_unbounded = true;
-            for &delta in d.iter() {
-                if delta > 0.0 {
-                    is_unbounded = false;
-                    break;
-                }
-            }
-
-            if is_unbounded {
-                Ok(Some(LPResult::Unbounded))
-            } else {
-                Ok(None)
-            }
+        if let Some(_) = entering_index {
+            Ok(None)
         } else {
             // No entering index exists, so this vertex is optimal. Convert
             // the compressed vector form to the full vector and return.
@@ -211,61 +193,11 @@ impl InteriorState {
     }
 }
 
-// Generate a feasible LP whose solution informs us as to whether the
-// original LP is feasible.
-// It takes the form:
-// Minimize 1^T z
-// Subject to Ax + z = b, x >= 0, z >= 0
-// For our purposes, we will avoid adding z variables when b_i = 0.
-// This LP is feasible as we can pick x = 0, z = b.
-// The original LP is feasible iff the minimum objective value is 0.
-//
-// Currently this code is the same as the code in simplex.rs, but
-// the two functions are separate as the two methods may in the future
-// want slightly different formulations of the phase 1 problem in order
-// to create simpler starting points.
-fn phase1(problem: &StandardForm) -> StandardForm {
-    let num_cols = problem.a.cols();
-    let mut num_zs = 0;
-
-    for (i, _) in problem.a.row_iter().enumerate() {
-        if problem.b[i] != 0.0 {
-            num_zs += 1;
-        }
-    }
-
-    let mut z_count = 0;
-    let mut phase1_a_data = Vec::new();
-    for (i, row) in problem.a.row_iter().enumerate() {
-        phase1_a_data.extend_from_slice(row.raw_slice());
-        let mut z_coeffs = Vec::new();
-        z_coeffs.resize(num_zs, 0.0);
-        if problem.b[i] > 0.0 {
-            z_coeffs[z_count] = 1.0;
-            z_count += 1;
-        } else if problem.b[i] < 0.0 {
-            z_coeffs[z_count] = -1.0;
-            z_count += 1;
-        }
-        phase1_a_data.extend(z_coeffs);
-    }
-
-    let mut phase1_c_data = Vec::new();
-    for _ in 0..num_cols {
-        phase1_c_data.push(0.0);
-    }
-    for _ in 0..num_zs {
-        phase1_c_data.push(1.0);
-    }
-
-    StandardForm {
-        a: Matrix::new(problem.a.rows(), num_cols + num_zs, phase1_a_data),
-        b: problem.b.clone(),
-        c: Vector::new(phase1_c_data),
-    }
+pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
+    internal_solve(problem, false, false)
 }
 
-pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
+fn internal_solve(problem: StandardForm, known_feasible: bool, known_bounded: bool) -> Result<LPResult, Error> {
     // TODO: Improve selection of initial mu and how it decreases.
     let mut initial_mu = 1.0;
     for c_i in problem.c.iter() {
@@ -273,8 +205,10 @@ pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
             initial_mu = c_i.abs();
         }
     }
+
     let num_vars = problem.a.cols();
     let num_duals = problem.a.rows();
+
     let mut state = InteriorState {
         x: Vector::ones(num_vars),
         y: Vector::zeros(num_duals),
@@ -285,81 +219,28 @@ pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
 
     loop {
         // Run Newton's method to almost convergence
-        loop {
-            let saved_state = state.clone();
-            let step_size = match state.newton_step() {
-                Ok(s) => s,
-                Err(_) => {
-                    // Likely our problem or its dual is infeasible.
-                    if is_feasible(&state.problem)? {
-                        if is_feasible(&state.problem.dual())? {
-                            // TODO: Make this error informative.
-                            // Here both the primal and dual are feasible but
-                            // we were unable to solve the problem.
-                            return Err(Error::UnknownError);
-                        } else {
-                            // If the primal is feasible and the dual is not,
-                            // the primal must be unbounded.
-                            return Ok(LPResult::Unbounded);
-                        }
-                    } else {
-                        return Ok(LPResult::Infeasible);
-                    }
-                },
-            };
-            // Check if NaNs have gotten into our state. If so, we should
-            // do feasibility checks or error out.
-            let mut has_nan = false;
-            for v in state.x.iter().chain(state.y.iter()).chain(state.z.iter()) {
-                if v.is_nan() {
-                    has_nan = true;
-                    break;
-                }
-            }
-
-            if has_nan {
-                // Newton's method is diverging, check if it is showing us an
-                // unbounded direction, and stop in any case.
-                match saved_state.check_rounded()? {
-                    Some(res) => return Ok(res),
-                    // TODO: Make error message informative.
-                    None => return Err(Error::UnknownError),
-                }
-            }
+        let mut iteration = 0;
+        while iteration < NEWTON_ITERATION_LIMIT {
+            iteration += 1;
+            let (step_size, alpha) = state.newton_step()?;
+            println!("{:?} {:?} {:?}", step_size, alpha, state);
+            println!("{:?} {:?}", state.problem.c.dot(&state.x), state.problem.b.dot(&state.y));
 
             if step_size < 1e-2 {
                 break;
             }
         }
+
         // Check for optimality
         match state.check_rounded().expect("check_rounded should not error") {
             Some(res) => {
+                println!("{:?}", res);
                 return Ok(res);
             },
             None => {},
         }
         // Decrease mu and repeat
         state.mu *= 0.5;
-    }
-}
-
-pub fn is_feasible(problem: &StandardForm) -> Result<bool, Error> {
-    let phase1_solution = solve(phase1(problem))?;
-    match phase1_solution {
-        LPResult::Infeasible => {
-            panic!("Phase 1 returned infeasible. This is a bug.");
-        },
-        LPResult::Unbounded => {
-            panic!("Phase 1 returned unbounded. This is a bug.");
-        },
-        LPResult::Optimum(x) => {
-            for i in problem.a.cols() .. x.size() {
-                if x[i] > 0.0 {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        },
     }
 }
 
@@ -553,6 +434,7 @@ fn test_solve_infeasible() {
     }
 }
 
+/*
 #[test]
 fn test_feasibility_check() {
     let feasible_problem = StandardForm {
@@ -578,3 +460,4 @@ fn test_feasibility_check() {
     assert!(!is_feasible(&infeasible_problem)
         .expect("Feasibility test should not fail"));
 }
+*/

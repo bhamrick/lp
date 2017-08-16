@@ -92,16 +92,14 @@ fn dense_40x80() {
     assert!(same_result(simplex_solution, interior_solution));
 }
 
-/*
-// Test currently fails due to interior_solution producing vector of NaNs
-// Simplex reports that the problem is unbounded
 #[test]
-fn dense_20x100() {
+fn dense_20x200() {
     // Test that simplex and interior methods give the same result
-    let problem = dense_seeded(20, 100, [1, 2, 3, 4]);
-    let simplex_solution = simplex::solve(problem.clone());
-    println!("{:?}", simplex_solution);
-    let interior_solution = interior::solve(problem.clone());
+    let problem = dense_seeded(20, 200, [1, 2, 3, 4]);
+    let simplex_solution = simplex::solve(problem.clone())
+        .expect("Simplex test failed;");
+    let interior_solution = interior::solve(problem.clone())
+        .expect("Interior test failed");
 
     if let LPResult::Infeasible = simplex_solution {
         panic!("Simplex got Infeasible on problem generated to be feasible");
@@ -112,4 +110,3 @@ fn dense_20x100() {
 
     assert!(same_result(simplex_solution, interior_solution));
 }
-*/

@@ -9,8 +9,6 @@ use rulinalg::matrix::{BaseMatrix, BaseMatrixMut, Matrix};
 use problem::{StandardForm, LPResult};
 use error::Error;
 
-const NEWTON_ITERATION_LIMIT : usize = 20;
-
 #[derive(Debug, Clone)]
 struct InteriorState {
     x: Vector<f32>,
@@ -197,7 +195,7 @@ pub fn solve(problem: StandardForm) -> Result<LPResult, Error> {
     internal_solve(problem, false, false)
 }
 
-fn internal_solve(problem: StandardForm, known_feasible: bool, known_bounded: bool) -> Result<LPResult, Error> {
+fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bounded: bool) -> Result<LPResult, Error> {
     // TODO: Improve selection of initial mu and how it decreases.
     let mut initial_mu = 1.0;
     for c_i in problem.c.iter() {
@@ -219,16 +217,44 @@ fn internal_solve(problem: StandardForm, known_feasible: bool, known_bounded: bo
 
     loop {
         // Run Newton's method to almost convergence
-        let mut iteration = 0;
-        while iteration < NEWTON_ITERATION_LIMIT {
-            iteration += 1;
-            let (step_size, alpha) = state.newton_step()?;
-            println!("{:?} {:?} {:?}", step_size, alpha, state);
-            println!("{:?} {:?}", state.problem.c.dot(&state.x), state.problem.b.dot(&state.y));
+        let (step_size, alpha) = state.newton_step()?;
+        println!("{:?} {:?} {:?}", step_size, alpha, state);
+        println!("{:?}", state.problem.c.dot(&state.x));
+        println!("{:?}", state.problem.a.transpose() * &state.y);
+        println!("{:?}", state.problem.b.dot(&state.y));
 
-            if step_size < 1e-2 {
-                break;
+        if alpha == 1.0 {
+            // If we ever take a full newton step, we have
+            // strictly feasible primal and dual points.
+            known_feasible = true;
+            known_bounded = true;
+        }
+        if !known_feasible {
+            // Check if y is a certificate of infeasibility.
+            // If A^Ty <= 0, but b^T y > 0, then the original problem
+            // is infeasible. Proof:
+            // Suppose x is such that Ax = b, x >= 0.
+            // Then
+            // (A^Ty)^Tx <= 0 (because A^Ty <= 0, x >= 0),
+            // but (A^Ty)^Tx = y^TAx = y^Tb = b^Ty > 0.
+            // Thus we have a contradiction.
+            if state.problem.b.dot(&state.y) > 0.0 {
+                let vec = state.problem.a.transpose() * &state.y;
+                let mut is_certificate = true;
+                for &v in vec.iter() {
+                    if v > 0.0 {
+                        is_certificate = false;
+                        break;
+                    }
+                }
+                if is_certificate {
+                    return Ok(LPResult::Infeasible);
+                }
             }
+        }
+
+        if step_size < 1e-2 {
+            state.mu *= 0.5;
         }
 
         // Check for optimality
@@ -239,8 +265,6 @@ fn internal_solve(problem: StandardForm, known_feasible: bool, known_bounded: bo
             },
             None => {},
         }
-        // Decrease mu and repeat
-        state.mu *= 0.5;
     }
 }
 

@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 use rulinalg::vector::Vector;
 use rulinalg::matrix::{BaseMatrix, BaseMatrixMut};
+use rulinalg::matrix::decomposition::PartialPivLu;
 #[cfg(test)]
 use rulinalg::matrix::Matrix;
 
@@ -73,15 +74,15 @@ impl InteriorState {
         // Find largest step in (p_x, p_y, p_z) direction that keeps x and z positive
         let mut alpha = 1.0;
         for (i, x_i) in self.x.iter().enumerate() {
-            // Constant of 0.9 is to ensure that we stay strictly positive.
-            let max_step = -0.9 * x_i / p_x[i];
+            // Constant of 0.995 is to ensure that we stay strictly positive.
+            let max_step = -0.995 * x_i / p_x[i];
             if max_step > 0.0 && max_step < alpha {
                 alpha = max_step;
             }
         }
         for (i, z_i) in self.z.iter().enumerate() {
-            // Constant of 0.9 is to ensure that we stay strictly positive.
-            let max_step = -0.9 * z_i / p_z[i];
+            // Constant of 0.995 is to ensure that we stay strictly positive.
+            let max_step = -0.995 * z_i / p_z[i];
             if max_step > 0.0 && max_step < alpha {
                 alpha = max_step;
             }
@@ -218,6 +219,7 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
     };
 
     let mut known_dual_infeasible = false;
+    let aat_lu = PartialPivLu::decompose(&state.problem.a * state.problem.a.transpose())?;
 
     loop {
         // Run Newton's method to almost convergence
@@ -257,10 +259,7 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
             // Due to Newton iteration Ax is approximately b,
             // solve AA^T v = b - Ax in order to find x' with
             // Ax' = b. If x' >= 0 then the problem is feasible.
-            // TODO: Cache LU factorization of AA^T to speed these repeated
-            // solves.
-            let adjustment = (&state.problem.a * state.problem.a.transpose())
-                .solve(&state.problem.b - &state.problem.a * &state.x)?;
+            let adjustment = aat_lu.solve(&state.problem.b - &state.problem.a * &state.x)?;
             let new_x = &state.x + state.problem.a.transpose() * adjustment;
             let mut is_positive = true;
             for &v in new_x.iter() {
@@ -282,9 +281,6 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
             // We take a few steps here. First, we scale x so that its
             // largest coordinate is at most 1. Then we find a close x'
             // such that Ax' = 0.
-            // As A is assumed to have full row rank, AA^T is invertible,
-            // so we solve the system AA^Tv = Ax, then let x' = x - A^Tv.
-            // If c^Tx' < 0, we have our desired certificate.
             let mut max_entry = 1.0;
             for &v in state.x.iter() {
                 if v.abs() > max_entry {
@@ -292,18 +288,36 @@ fn internal_solve(problem: StandardForm, mut known_feasible: bool, mut known_bou
                 }
             }
             let reduced_x = &state.x / max_entry;
-            let adjustment = (&state.problem.a * &state.problem.a.transpose())
-                .solve(&state.problem.a * &reduced_x)?;
-            let new_x = &reduced_x - state.problem.a.transpose() * &adjustment;
-            let mut is_positive = true;
-            for &v in new_x.iter() {
-                if v < 0.0 {
-                    is_positive = false;
+            // Because the Newton iteration for unbounded problems will tend
+            // toward infinity, many of the components of reduced_x will be
+            // very close to 0. In order to find x', we will sort the dimensions
+            // by their entry in reduced_x, and then solve for how to write
+            // the column for the first dimension in terms of the next
+            // m.
+            let mut dimensions = Vec::new();
+            for i in 0..reduced_x.size() {
+                dimensions.push(i);
+            }
+            dimensions.sort_by(|&i, &j| reduced_x[j].partial_cmp(&reduced_x[i]).unwrap());
+            let rhs : Vector<f32> = state.problem.a.col(dimensions[0]).into();
+            let num_rows = state.problem.a.rows();
+            let submatrix = state.problem.a.select_cols(dimensions[1..num_rows+1].iter());
+            let combination = submatrix.solve(rhs)?;
+            let mut all_negative = true;
+            for &v in combination.iter() {
+                if v > 0.0 {
+                    all_negative = false;
                     break;
                 }
             }
-            if is_positive && state.problem.c.dot(&new_x) < 0.0 {
-                known_dual_infeasible = true;
+            if all_negative {
+                let mut objective_contribution = state.problem.c[dimensions[0]];
+                for (&d, v) in dimensions[1..].iter().zip(combination) {
+                    objective_contribution += state.problem.c[d] * (-v);
+                }
+                if objective_contribution < 0.0 {
+                    known_dual_infeasible = true;
+                }
             }
         }
 

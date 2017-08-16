@@ -61,7 +61,6 @@ fn interior_dense_40x80(b: &mut Bencher) {
     });
 }
 
-/*
 // TODO: Investigate why NaNs appear when running this benchmark.
 #[bench]
 fn interior_dense_100x200(b: &mut Bencher) {
@@ -71,4 +70,3 @@ fn interior_dense_100x200(b: &mut Bencher) {
             .expect("Interior solve should not fail");
     });
 }
-*/
